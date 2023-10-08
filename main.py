@@ -126,9 +126,11 @@ def run_read_extracted_and_transform(extract_dir: str, converted: str, file_urls
             # NOTE: В ТЗ попросили сначала указать шаг по горизонтали, потом по вертикали. По горизонтали означает
             # справа налево (нагуглил в нескольких беседах и сам логически пришел, что идем вдоль горизонта), но
             # это вступает в противоречие с порядком latitude и longitude указанными ранее, ведь latitude это снизу
-            # вверх. Этот момент нужно уточнить при личном общении, скорее всего здесь опечатка в ТЗ
+            # вверх. Этот момент нужно уточнить при личном общении, скорее всего здесь опечатка в ТЗ. В моем коде
+            # буду использовать также, как описано в ТЗ в примере работы на php (где идет 2 значения Y, потом для X,
+            # потом одно Y и одно X)
             header = struct.pack('7i f', d.latitude_min, d.latitude_max, d.longitude_min, d.longitude_max,
-                                 d.longitude_step, d.latitude_step, d.multiplier, -100500.0)
+                                 d.latitude_step, d.longitude_step, d.multiplier, -100500.0)
             data_to_write = prepare_grib2_data(d.data, grib_data_list[i - 1].data if is_previous_value_exist else None)
             file.write(header + data_to_write.flatten().tobytes())
     logger.info("Конвертация закончилась успешно")
