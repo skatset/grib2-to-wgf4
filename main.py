@@ -124,37 +124,43 @@ def run_read_extracted_and_transform(extract_dir: str, converted: str, processes
     :param processes: Количество процессов для параллельной обработки.
     :param file_urls: Список URL-ов файлов для обработки.
     """
-    logger.info("Считываем извлеченные файлы")
+    logger.info("Считываем конвертируем извлеченные файлы")
     pool = multiprocessing.Pool(processes=processes)
-    grib_data_list = pool.starmap(extract_grib2_data,
-                                  [(os.path.join(extract_dir, file_name_from_url(url)),) for url in file_urls])
-    pool.close()
-    pool.join()
-    logger.info("Началась конвертация файлов")
+    async_result_list = []
+    for url in file_urls:
+        async_result_list.append(pool.apply_async(extract_grib2_data,
+                                                  (os.path.join(extract_dir, file_name_from_url(url)),)))
 
     async def async_process() -> None:
         tasks = []
-        for (i, gd) in enumerate(grib_data_list):
+        for (i, async_result) in enumerate(async_result_list):
+            gd = async_result.get()
             if gd is None:
                 logger.error(f"Ошибка парсинга файла {file_name_from_url(file_urls[i])}, пропускаю его")
                 continue
-            is_previous_value_exist = i != 0 and grib_data_list[i - 1] is not None
-            if is_previous_value_exist:
-                if gd.latitude_step != grib_data_list[i - 1].latitude_step \
-                        or gd.longitude_step != grib_data_list[i - 1].longitude_step \
-                        or gd.latitude_max != grib_data_list[i - 1].latitude_max \
-                        or gd.latitude_min != grib_data_list[i - 1].latitude_min \
-                        or gd.longitude_max != grib_data_list[i - 1].longitude_max \
-                        or gd.longitude_min != grib_data_list[i - 1].longitude_min:
-                    logger.error(
-                        f"Максимальные, минимальные координаты или шаг сетки у соседних файлов не совпадает, "
-                        f"пропускаю файл {file_name_from_url(file_urls[i])}")
-                    continue
+            if i != 0:
+                prev_gb = async_result_list[i - 1].get()
+                is_previous_value_exist = i != 0 and prev_gb is not None
+                if is_previous_value_exist:
+                    if gd.latitude_step != prev_gb.latitude_step \
+                            or gd.longitude_step != prev_gb.longitude_step \
+                            or gd.latitude_max != prev_gb.latitude_max \
+                            or gd.latitude_min != prev_gb.latitude_min \
+                            or gd.longitude_max != prev_gb.longitude_max \
+                            or gd.longitude_min != prev_gb.longitude_min:
+                        logger.error(
+                            f"Максимальные, минимальные координаты или шаг сетки у соседних файлов не совпадает, "
+                            f"пропускаю файл {file_name_from_url(file_urls[i])}")
+                        continue
+            is_previous_value_exist = i != 0 and async_result_list[i - 1].get() is not None
             output_dir = os.path.join(converted, gd.predict_date.strftime("%Y%m%d_%H:%M_%s"))
-            tasks.append(save_file(output_dir, gd, grib_data_list[i - 1].data if is_previous_value_exist else None))
+            tasks.append(save_file(output_dir, gd,
+                                   async_result_list[i - 1].get().data if is_previous_value_exist else None))
         await asyncio.gather(*tasks)
 
     asyncio.run(async_process())
+    pool.close()
+    pool.join()
     logger.info("Конвертация закончилась успешно")
 
 
