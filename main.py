@@ -92,47 +92,62 @@ def extract_grib2_data(file_path: str) -> Optional[Grib2Data]:
                      multiplier=multiplier, data=result_data, predict_date=date)
 
 
-def run_read_extracted_and_transform(extract_dir: str, converted: str, file_urls: List[str]) -> None:
+async def save_file(output_dir: str, gb: Grib2Data, previous_data: np.ndarray):
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, "PRATE.wgf4")
+    async with aiofiles.open(filepath, 'wb') as file:
+        # NOTE: В ТЗ попросили сначала указать шаг по горизонтали, потом по вертикали. По горизонтали означает
+        # справа налево (нагуглил в нескольких беседах и сам логически пришел, что идем вдоль горизонта), но
+        # это вступает в противоречие с порядком latitude и longitude указанными ранее, ведь latitude это снизу
+        # вверх. Этот момент нужно уточнить при личном общении, скорее всего здесь опечатка в ТЗ. В моем коде
+        # буду использовать также, как описано в ТЗ в примере работы на php (где идет 2 значения Y, потом для X,
+        # потом одно Y и одно X)
+        header = struct.pack('7i f', gb.latitude_min, gb.latitude_max, gb.longitude_min, gb.longitude_max,
+                             gb.latitude_step, gb.longitude_step, gb.multiplier, -100500.0)
+        data_to_write = prepare_grib2_data(gb.data, previous_data)
+        await file.write(header + data_to_write.flatten().tobytes())
+
+
+def run_read_extracted_and_transform(extract_dir: str, converted: str, processes: int, file_urls: List[str]) -> None:
     """
     Извлекает, конвертирует и сохраняет данные из файлов в формате wgf4.
 
     :param extract_dir: Каталог с извлеченными файлами.
     :param converted: Каталог для сохранения конвертированных файлов.
+    :param processes: Количество процессов для параллельной обработки.
     :param file_urls: Список URL-ов файлов для обработки.
     """
+    logger.info("Считываем извлеченные файлы")
+    pool = multiprocessing.Pool(processes=processes)
+    grib_data_list = pool.starmap(extract_grib2_data,
+                                  [(os.path.join(extract_dir, file_name_from_url(url)),) for url in file_urls])
+    pool.close()
+    pool.join()
     logger.info("Началась конвертация файлов")
-    grib_data_list = []
-    for url in file_urls:
-        grib_data_list.append(extract_grib2_data(os.path.join(extract_dir, file_name_from_url(url))))
-    for (i, d) in enumerate(grib_data_list):
-        if d is None:
-            logger.error(f"Ошибка парсинга файла {file_name_from_url(file_urls[i])}, пропускаю его")
-            continue
-        is_previous_value_exist = i != 0 and grib_data_list[i - 1] is not None
-        if is_previous_value_exist:
-            if d.latitude_step != grib_data_list[i - 1].latitude_step \
-                    or d.longitude_step != grib_data_list[i - 1].longitude_step \
-                    or d.latitude_max != grib_data_list[i - 1].latitude_max \
-                    or d.latitude_min != grib_data_list[i - 1].latitude_min \
-                    or d.longitude_max != grib_data_list[i - 1].longitude_max \
-                    or d.longitude_min != grib_data_list[i - 1].longitude_min:
-                logger.error(f"Максимальные, минимальные координаты или шаг сетки у соседних файлов не совпадает, "
-                             f"пропускаю файл {file_name_from_url(file_urls[i])}")
+
+    async def async_process() -> None:
+        tasks = []
+        for (i, gd) in enumerate(grib_data_list):
+            if gd is None:
+                logger.error(f"Ошибка парсинга файла {file_name_from_url(file_urls[i])}, пропускаю его")
                 continue
-        output_dir = os.path.join(converted, d.predict_date.strftime("%Y%m%d_%H:%M_%s"))
-        os.makedirs(output_dir, exist_ok=True)
-        filepath = os.path.join(output_dir, "PRATE.wgf4")
-        with open(filepath, 'wb') as file:
-            # NOTE: В ТЗ попросили сначала указать шаг по горизонтали, потом по вертикали. По горизонтали означает
-            # справа налево (нагуглил в нескольких беседах и сам логически пришел, что идем вдоль горизонта), но
-            # это вступает в противоречие с порядком latitude и longitude указанными ранее, ведь latitude это снизу
-            # вверх. Этот момент нужно уточнить при личном общении, скорее всего здесь опечатка в ТЗ. В моем коде
-            # буду использовать также, как описано в ТЗ в примере работы на php (где идет 2 значения Y, потом для X,
-            # потом одно Y и одно X)
-            header = struct.pack('7i f', d.latitude_min, d.latitude_max, d.longitude_min, d.longitude_max,
-                                 d.latitude_step, d.longitude_step, d.multiplier, -100500.0)
-            data_to_write = prepare_grib2_data(d.data, grib_data_list[i - 1].data if is_previous_value_exist else None)
-            file.write(header + data_to_write.flatten().tobytes())
+            is_previous_value_exist = i != 0 and grib_data_list[i - 1] is not None
+            if is_previous_value_exist:
+                if gd.latitude_step != grib_data_list[i - 1].latitude_step \
+                        or gd.longitude_step != grib_data_list[i - 1].longitude_step \
+                        or gd.latitude_max != grib_data_list[i - 1].latitude_max \
+                        or gd.latitude_min != grib_data_list[i - 1].latitude_min \
+                        or gd.longitude_max != grib_data_list[i - 1].longitude_max \
+                        or gd.longitude_min != grib_data_list[i - 1].longitude_min:
+                    logger.error(
+                        f"Максимальные, минимальные координаты или шаг сетки у соседних файлов не совпадает, "
+                        f"пропускаю файл {file_name_from_url(file_urls[i])}")
+                    continue
+            output_dir = os.path.join(converted, gd.predict_date.strftime("%Y%m%d_%H:%M_%s"))
+            tasks.append(save_file(output_dir, gd, grib_data_list[i - 1].data if is_previous_value_exist else None))
+        await asyncio.gather(*tasks)
+
+    asyncio.run(async_process())
     logger.info("Конвертация закончилась успешно")
 
 
@@ -187,6 +202,7 @@ def download_and_extract(extract_dir: str, file_urls: List[str]) -> None:
     :param extract_dir: Каталог для извлечения файлов.
     :param file_urls: Список URL-ов файлов для скачивания и извлечения.
     """
+
     async def async_process() -> None:
         async with aiohttp.ClientSession() as session:
             tasks = [fetch_file(session, url, extract_dir) for url in file_urls]
@@ -239,7 +255,7 @@ def fetch_file_list_and_run(args: argparse.Namespace) -> None:
     ]
 
     split_by_chunk_and_run_download_and_extract_in_parallel(args.extract_dir, args.processes, file_urls)
-    run_read_extracted_and_transform(args.extract_dir, args.converted_dir, file_urls)
+    run_read_extracted_and_transform(args.extract_dir, args.converted_dir, args.processes, file_urls)
 
 
 def main() -> None:
