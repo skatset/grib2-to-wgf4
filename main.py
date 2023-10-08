@@ -31,12 +31,13 @@ Grib2Data = namedtuple('Grib2Data', ['latitude_min', 'latitude_max', 'latitude_s
                                      'multiplier', 'data', 'predict_date'])
 
 
-def extract_grib2_data(file_path: str) -> Grib2Data:
+def extract_grib2_data(file_path: str) -> Optional[Grib2Data]:
     """
     Извлекает данные из GRIB2 файла и возвращает их в виде именованного кортежа.
 
     :param file_path: Путь к GRIB2 файлу.
-    :return: Именованный кортеж Grib2Data с извлеченными данными.
+    :return: Именованный кортеж Grib2Data с извлеченными данными. Если возвращается None, то файл не удалось распарсить
+    и его нужно пропустить
     """
     # NOTE: хорошо бы хранить в памяти всё и передавать, диск лишняя сущность, в но в этом API библиотеки нет готового
     # способа работы с памятью. Можно переписать, если будет необходимость ускорить общее время работы
@@ -46,12 +47,15 @@ def extract_grib2_data(file_path: str) -> Grib2Data:
     # использованием (потому что они не используются, если уже созданы в предыдущем запуске). Нужно замерять как будет
     # быстрее и есть ли разница
     datasets = cfgrib.open_datasets(file_path)
-    # TODO: нужно проверить поля в файле, что они соответствуют ожидаемому нам формату, для этого задания я это опущу
-    ds = datasets[0]  # TODO проверить на количество и обработать как ошибку
+    # NOTE: нужно проверить поля в файле на соответствие ожидаемому нам формату, для этого задания я это опущу
+    if len(datasets) != 1:
+        logger.error(f"В файле {file_path} содержится {len(datasets)} датасетов, ожидалось 1")
+        return None
+    ds = datasets[0]
     # TODO: нужно сделать проверку, что вычисленный шаг сетки соблюдается для всех значений
     multiplier = 1000000
 
-    if len(ds.tp.to_numpy().shape) == 2:
+    if len(ds.tp.to_numpy().shape) == 2 and "_048_" in file_path:
         # NOTE: почему-то 07.10.2023 после 13 часов последняя 48ая запись получилась с 1 размерностью
         result_data = ds.tp.to_numpy()
     elif len(ds.tp.to_numpy().shape) == 3:
@@ -60,7 +64,7 @@ def extract_grib2_data(file_path: str) -> Grib2Data:
         # предсказанное значение (за 45ую минуту). Это хорошо бы еще уточнить голосом/текстом
         result_data = ds.tp.to_numpy()[-1, :, :]
     else:
-        # TODO: обработать ошибку
+        logger.error(f"В файле {file_path} ожидалась размерность 2 или 3, а пришла {len(ds.tp.to_numpy().shape)}")
         return None
     pattern = r".*(\d{4})(\d{2})(\d{2})(\d{2})_(\d{3})_2d_tot_prec.grib2"
     match = re.match(pattern, file_path)
@@ -69,7 +73,7 @@ def extract_grib2_data(file_path: str) -> Grib2Data:
         date = datetime(year, month, day, hour)
         date += timedelta(hours=offset)
     else:
-        # TODO: обработать ошибку
+        logger.error(f"В названии файла {file_path} не смогли найти дату в нужном формате")
         return None
     return Grib2Data(latitude_min=int(ds.latitude.min() * multiplier),
                      latitude_max=int(ds.latitude.max() * multiplier),
@@ -93,14 +97,19 @@ def run_read_extracted_and_transform(extract_dir: str, converted: str, file_urls
     for url in file_urls:
         grib_data_list.append(extract_grib2_data(os.path.join(extract_dir, file_name_from_url(url))))
     for (i, d) in enumerate(grib_data_list):
-        if i != 0:
+        if d is None:
+            logger.error(f"Ошибка парсинга файла {file_name_from_url(file_urls[i])}, пропускаю его")
+            continue
+        is_previous_value_exist = i != 0 and grib_data_list[i - 1] is not None
+        if is_previous_value_exist:
             if d.latitude_step != grib_data_list[i - 1].latitude_step \
                     or d.longitude_step != grib_data_list[i - 1].longitude_step \
                     or d.latitude_max != grib_data_list[i - 1].latitude_max \
                     or d.latitude_min != grib_data_list[i - 1].latitude_min \
                     or d.longitude_max != grib_data_list[i - 1].longitude_max \
                     or d.longitude_min != grib_data_list[i - 1].longitude_min:
-                # TODO: обработать ошибку
+                logger.error(f"Максимальные, минимальные координаты или шаг сетки у соседних файлов не совпадает, "
+                             f"пропускаю файл {file_name_from_url(file_urls[i])}")
                 continue
         output_dir = os.path.join(converted, d.predict_date.strftime("%Y%m%d_%H:%M_%s"))
         os.makedirs(output_dir, exist_ok=True)
@@ -112,7 +121,7 @@ def run_read_extracted_and_transform(extract_dir: str, converted: str, file_urls
             # вверх. Этот момент нужно уточнить при личном общении, скорее всего здесь опечатка в ТЗ
             header = struct.pack('7i f', d.latitude_min, d.latitude_max, d.longitude_min, d.longitude_max,
                                  d.longitude_step, d.latitude_step, d.multiplier, -100500.0)
-            data_to_write = prepare_grib2_data(d.data, grib_data_list[i - 1].data if i != 0 else None)
+            data_to_write = prepare_grib2_data(d.data, grib_data_list[i - 1].data if is_previous_value_exist else None)
             file.write(header + data_to_write.flatten().tobytes())
     logger.info("Конвертация закончилась успешно")
 
@@ -135,7 +144,7 @@ def prepare_grib2_data(data: np.ndarray, previous_data: Optional[np.ndarray]) ->
 
 def file_name_from_url(url: str) -> str:
     """
-    Извлекает имя файла из URL и удаляет расширение .bz2.
+    Извлекает имя файла из URL, удаляет расширение ".bz2".
 
     :param url: URL файла.
     :return: Имя файла.
@@ -176,9 +185,10 @@ def download_and_extract(extract_dir: str, file_urls: List[str]) -> None:
     asyncio.run(async_process())
 
 
-def split_by_chunk_and_run_download_and_extract_in_parallel(extract_dir: str, processes: int, file_urls: List[str]) -> None:
+def split_by_chunk_and_run_download_and_extract_in_parallel(extract_dir: str, processes: int, file_urls: List[str]) -> \
+        None:
     """
-    Разбивает список URL-ов файлов на части и выполняет скачивание и извлечение параллельно в нескольких процессах.
+    Разбивает список URL-ов файлов на части, выполняет скачивание и извлечение параллельно в нескольких процессах.
 
     :param extract_dir: Каталог для извлечения файлов.
     :param processes: Количество процессов для параллельной обработки.
@@ -219,10 +229,6 @@ def fetch_file_list_and_run(args: argparse.Namespace) -> None:
         if line.startswith("<a href=") and "regular-lat-lon" in line
     ]
 
-    # код для отладки, использую минимум значений
-    # TODO: удалить перед показом
-    # file_urls = file_urls[:2]
-
     split_by_chunk_and_run_download_and_extract_in_parallel(args.extract_dir, args.processes, file_urls)
     run_read_extracted_and_transform(args.extract_dir, args.converted_dir, file_urls)
 
@@ -231,7 +237,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Скачивание файлов grib2, конвертация их в формат wgf4")
     parser.add_argument("--url",
                         default="https://opendata.dwd.de/weather/nwp/icon-d2/grib/12/tot_prec/",
-                        help="URL сайта с файлами, по умолчанию https://opendata.dwd.de/weather/nwp/icon-d2/grib/12/tot_prec/")
+                        help="URL сайта с файлами, по умолчанию "
+                             "https://opendata.dwd.de/weather/nwp/icon-d2/grib/12/tot_prec/")
     parser.add_argument("--extract_dir", default="extracted",
                         help="Каталог для извлеченных файлов, по умолчанию: extracted")
     parser.add_argument("--converted_dir", default="icon_d2",
