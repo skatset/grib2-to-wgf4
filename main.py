@@ -17,7 +17,7 @@ import requests
 import cfgrib
 from collections import namedtuple
 
-
+# Настройка логгера
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(levelname)s - %(message)s')
@@ -25,12 +25,19 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
+# Определение именованного кортежа для хранения данных из GRIB2 файла
 Grib2Data = namedtuple('Grib2Data', ['latitude_min', 'latitude_max', 'latitude_step',
                                      'longitude_min', 'longitude_max', 'longitude_step',
                                      'multiplier', 'data', 'predict_date'])
 
 
 def extract_grib2_data(file_path: str) -> Grib2Data:
+    """
+    Извлекает данные из GRIB2 файла и возвращает их в виде именованного кортежа.
+
+    :param file_path: Путь к GRIB2 файлу.
+    :return: Именованный кортеж Grib2Data с извлеченными данными.
+    """
     # NOTE: хорошо бы хранить в памяти всё и передавать, диск лишняя сущность, в но в этом API библиотеки нет готового
     # способа работы с памятью. Можно переписать, если будет необходимость ускорить общее время работы
     # NOTE: мне нужна только часть датасета, возможно для ускорения доставать только его (это еще нужно проверить)
@@ -74,6 +81,13 @@ def extract_grib2_data(file_path: str) -> Grib2Data:
 
 
 def run_read_extracted_and_transform(extract_dir: str, converted: str, file_urls: List[str]) -> None:
+    """
+    Извлекает, конвертирует и сохраняет данные из файлов в формате wgf4.
+
+    :param extract_dir: Каталог с извлеченными файлами.
+    :param converted: Каталог для сохранения конвертированных файлов.
+    :param file_urls: Список URL-ов файлов для обработки.
+    """
     logger.info("Началась конвертация файлов")
     grib_data_list = []
     for url in file_urls:
@@ -104,6 +118,13 @@ def run_read_extracted_and_transform(extract_dir: str, converted: str, file_urls
 
 
 def prepare_grib2_data(data: np.ndarray, previous_data: Optional[np.ndarray]) -> np.ndarray:
+    """
+    Подготавливает данные для сохранения, вычитая предыдущие данные и обрабатывая NaN значения.
+
+    :param data: Текущие данные.
+    :param previous_data: Предыдущие данные (опционально).
+    :return: Обработанные данные.
+    """
     if previous_data is not None:
         result_data = data - previous_data
         result_data[np.isnan(previous_data)] = data[np.isnan(previous_data)]
@@ -113,11 +134,24 @@ def prepare_grib2_data(data: np.ndarray, previous_data: Optional[np.ndarray]) ->
 
 
 def file_name_from_url(url: str) -> str:
+    """
+    Извлекает имя файла из URL и удаляет расширение .bz2.
+
+    :param url: URL файла.
+    :return: Имя файла.
+    """
     filename = url.split("/")[-1]
-    return filename[:-4]  # Убираем .bz2 из имени файла
+    return filename[:-4]
 
 
 async def fetch_file(session: aiohttp.ClientSession, url: str, extract_dir: str) -> None:
+    """
+    Асинхронно скачивает и извлекает файл.
+
+    :param session: Aiohttp сессия.
+    :param url: URL файла для скачивания.
+    :param extract_dir: Каталог для извлечения файла.
+    """
     async with session.get(url) as response:
         if response.status == 200:
             file_data = await response.read()
@@ -128,6 +162,12 @@ async def fetch_file(session: aiohttp.ClientSession, url: str, extract_dir: str)
 
 
 def download_and_extract(extract_dir: str, file_urls: List[str]) -> None:
+    """
+    Скачивает и извлекает файлы асинхронно.
+
+    :param extract_dir: Каталог для извлечения файлов.
+    :param file_urls: Список URL-ов файлов для скачивания и извлечения.
+    """
     async def async_process() -> None:
         async with aiohttp.ClientSession() as session:
             tasks = [fetch_file(session, url, extract_dir) for url in file_urls]
@@ -137,6 +177,13 @@ def download_and_extract(extract_dir: str, file_urls: List[str]) -> None:
 
 
 def split_by_chunk_and_run_download_and_extract_in_parallel(extract_dir: str, processes: int, file_urls: List[str]) -> None:
+    """
+    Разбивает список URL-ов файлов на части и выполняет скачивание и извлечение параллельно в нескольких процессах.
+
+    :param extract_dir: Каталог для извлечения файлов.
+    :param processes: Количество процессов для параллельной обработки.
+    :param file_urls: Список URL-ов файлов для скачивания и извлечения.
+    """
     # предотвращаем случай, когда есть остаток от деления и создается на 1 chunk больше
     chunk_size = len(file_urls) // processes + 1
     chunks = [file_urls[i:i + chunk_size] for i in range(0, len(file_urls), chunk_size)]
@@ -152,6 +199,11 @@ def split_by_chunk_and_run_download_and_extract_in_parallel(extract_dir: str, pr
 
 
 def fetch_file_list_and_run(args: argparse.Namespace) -> None:
+    """
+    Загружает список файлов с веб-сайта, а затем выполняет скачивание и обработку файлов.
+
+    :param args: Аргументы командной строки.
+    """
     # NOTE: я использую requests вместо асинхронщины конкретно в этом месте, потому что мне нужно выполнить ровно 1
     # запрос и до его выполнения программа не может быть продолжена дальше, здесь чисто синхронный код
     # TODO: убрать warning NotOpenSSLWarning: urllib3 v2.0 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
