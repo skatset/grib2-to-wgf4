@@ -4,7 +4,7 @@ import argparse
 import re
 import struct
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 
 import aiohttp
 import asyncio
@@ -98,12 +98,18 @@ def run_read_extracted_and_transform(extract_dir: str, converted: str, file_urls
             # вверх. Этот момент нужно уточнить при личном общении, скорее всего здесь опечатка в ТЗ
             header = struct.pack('7i f', d.latitude_min, d.latitude_max, d.longitude_min, d.longitude_max,
                                  d.longitude_step, d.latitude_step, d.multiplier, -100500.0)
-            data_to_write = d.data
-            if i != 0:
-                data_to_write -= grib_data_list[i - 1].data
-            data_to_write = np.nan_to_num(data_to_write, nan=-100500.0)
+            data_to_write = prepare_grib2_data(d.data, grib_data_list[i - 1].data if i != 0 else None)
             file.write(header + data_to_write.flatten().tobytes())
     logger.info("Конвертация закончилась успешно")
+
+
+def prepare_grib2_data(data: np.ndarray, previous_data: Optional[np.ndarray]) -> np.ndarray:
+    if previous_data is not None:
+        result_data = data - previous_data
+        result_data[np.isnan(previous_data)] = data[np.isnan(previous_data)]
+        return np.nan_to_num(result_data, nan=-100500.0)
+    else:
+        return np.nan_to_num(data, nan=-100500.0)
 
 
 def file_name_from_url(url: str) -> str:
