@@ -93,6 +93,13 @@ def extract_grib2_data(file_path: str) -> Optional[Grib2Data]:
 
 
 async def save_file(output_dir: str, gb: Grib2Data, previous_data: np.ndarray):
+    """
+    Асинхронно сохраняет данные в файл формата wgf4.
+
+    :param output_dir: Каталог для сохранения файла.
+    :param gb: Данные GribData для сохранения.
+    :param previous_data: Предыдущие данные для обработки.
+    """
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, "PRATE.wgf4")
     async with aiofiles.open(filepath, 'wb') as file:
