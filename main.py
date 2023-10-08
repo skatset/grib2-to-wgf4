@@ -1,8 +1,10 @@
+import logging
 import os
 import argparse
 import re
 import struct
 from datetime import datetime, timedelta
+from typing import List
 
 import aiohttp
 import asyncio
@@ -16,12 +18,19 @@ import cfgrib
 from collections import namedtuple
 
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(levelname)s - %(message)s')
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
 Grib2Data = namedtuple('Grib2Data', ['latitude_min', 'latitude_max', 'latitude_step',
                                      'longitude_min', 'longitude_max', 'longitude_step',
                                      'multiplier', 'data', 'predict_date'])
 
 
-def extract_grib2_data(file_path):
+def extract_grib2_data(file_path: str) -> Grib2Data:
     # NOTE: хорошо бы хранить в памяти всё и передавать, диск лишняя сущность, в но в этом API библиотеки нет готового
     # способа работы с памятью. Можно переписать, если будет необходимость ускорить общее время работы
     # NOTE: мне нужна только часть датасета, возможно для ускорения доставать только его (это еще нужно проверить)
@@ -45,7 +54,7 @@ def extract_grib2_data(file_path):
         result_data = ds.tp.to_numpy()[-1, :, :]
     else:
         # TODO: обработать ошибку
-        return
+        return None
     pattern = r".*(\d{4})(\d{2})(\d{2})(\d{2})_(\d{3})_2d_tot_prec.grib2"
     match = re.match(pattern, file_path)
     if match:
@@ -54,7 +63,7 @@ def extract_grib2_data(file_path):
         date += timedelta(hours=offset)
     else:
         # TODO: обработать ошибку
-        return
+        return None
     return Grib2Data(latitude_min=int(ds.latitude.min() * multiplier),
                      latitude_max=int(ds.latitude.max() * multiplier),
                      latitude_step=int((ds.latitude.max() - ds.latitude.min()) * multiplier / len(ds.latitude)),
@@ -64,8 +73,8 @@ def extract_grib2_data(file_path):
                      multiplier=multiplier, data=result_data, predict_date=date)
 
 
-def run_read_extracted_and_transform(extract_dir, converted, file_urls):
-    print("Началась конвертация файлов")
+def run_read_extracted_and_transform(extract_dir: str, converted: str, file_urls: List[str]) -> None:
+    logger.info("Началась конвертация файлов")
     grib_data_list = []
     for url in file_urls:
         grib_data_list.append(extract_grib2_data(os.path.join(extract_dir, file_name_from_url(url))))
@@ -94,26 +103,26 @@ def run_read_extracted_and_transform(extract_dir, converted, file_urls):
                 data_to_write -= grib_data_list[i - 1].data
             data_to_write = np.nan_to_num(data_to_write, nan=-100500.0)
             file.write(header + data_to_write.flatten().tobytes())
-    print(f"Конвертация закончилась успешно")
+    logger.info("Конвертация закончилась успешно")
 
 
-def file_name_from_url(url):
+def file_name_from_url(url: str) -> str:
     filename = url.split("/")[-1]
     return filename[:-4]  # Убираем .bz2 из имени файла
 
 
-async def fetch_file(session, url, extract_dir):
+async def fetch_file(session: aiohttp.ClientSession, url: str, extract_dir: str) -> None:
     async with session.get(url) as response:
         if response.status == 200:
             file_data = await response.read()
             filepath = os.path.join(extract_dir, file_name_from_url(url))
             async with aiofiles.open(filepath, "wb") as file:
                 await file.write(bz2.decompress(file_data))
-            print(f"Извлечен файл: {filepath}")
+            logger.info(f"Извлечен файл: {filepath}")
 
 
-def run_download_and_extract(extract_dir, file_urls):
-    async def download_and_extract():
+def run_download_and_extract(extract_dir: str, file_urls: List[str]) -> None:
+    async def download_and_extract() -> None:
         async with aiohttp.ClientSession() as session:
             tasks = [fetch_file(session, url, extract_dir) for url in file_urls]
             await asyncio.gather(*tasks)
@@ -121,13 +130,13 @@ def run_download_and_extract(extract_dir, file_urls):
     asyncio.run(download_and_extract())
 
 
-def fetch_file_list_run_processing_by_chunk(args):
+def fetch_file_list_run_processing_by_chunk(args: argparse.Namespace) -> None:
     # NOTE: я использую requests вместо асинхронщины конкретно в этом месте, потому что мне нужно выполнить ровно 1
     # запрос и до его выполнения программа не может быть продолжена дальше, здесь чисто синхронный код
     # TODO: убрать warning NotOpenSSLWarning: urllib3 v2.0 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
     response = requests.get(args.url)
     if response.status_code != 200:
-        print(f"Не могу получить содержимое по запросу {args.url}, код ошибки {response.status_code}")
+        logger.error(f"Не могу получить содержимое по запросу {args.url}, код ошибки {response.status_code}")
         return
 
     page_content = response.text
@@ -157,7 +166,7 @@ def fetch_file_list_run_processing_by_chunk(args):
     run_read_extracted_and_transform(args.extract_dir, args.converted_dir, file_urls)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Скачивание файлов grib2, конвертация их в формат wgf4")
     parser.add_argument("--url",
                         default="https://opendata.dwd.de/weather/nwp/icon-d2/grib/12/tot_prec/",
