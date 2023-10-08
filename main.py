@@ -53,7 +53,14 @@ def extract_grib2_data(file_path: str) -> Optional[Grib2Data]:
         logger.error(f"В файле {file_path} содержится {len(datasets)} датасетов, ожидалось 1")
         return None
     ds = datasets[0]
-    # TODO: нужно сделать проверку, что вычисленный шаг сетки соблюдается для всех значений
+    latitude_step = float(ds.latitude.max() - ds.latitude.min()) / len(ds.latitude)
+    longitude_step = float(ds.longitude.max() - ds.longitude.min()) / len(ds.longitude)
+    if not (np.diff(ds.latitude) - latitude_step < 1e10).all():
+        logger.error(f"В файле {file_path} рассчитанный шаг для latitude не выполняется")
+        return None
+    if not (np.diff(ds.longitude) - longitude_step < 1e10).all():
+        logger.error(f"В файле {file_path} рассчитанный шаг для longitude не выполняется")
+        return None
     multiplier = 1000000
 
     if len(ds.tp.to_numpy().shape) == 2 and "_048_" in file_path:
@@ -78,10 +85,10 @@ def extract_grib2_data(file_path: str) -> Optional[Grib2Data]:
         return None
     return Grib2Data(latitude_min=int(ds.latitude.min() * multiplier),
                      latitude_max=int(ds.latitude.max() * multiplier),
-                     latitude_step=int((ds.latitude.max() - ds.latitude.min()) * multiplier / len(ds.latitude)),
+                     latitude_step=int(latitude_step * multiplier),
                      longitude_min=int(ds.longitude.min() * multiplier),
                      longitude_max=int(ds.longitude.max() * multiplier),
-                     longitude_step=int((ds.longitude.max() - ds.longitude.min()) * multiplier / len(ds.longitude)),
+                     longitude_step=int(longitude_step * multiplier),
                      multiplier=multiplier, data=result_data, predict_date=date)
 
 
