@@ -121,16 +121,31 @@ async def fetch_file(session: aiohttp.ClientSession, url: str, extract_dir: str)
             logger.info(f"Извлечен файл: {filepath}")
 
 
-def run_download_and_extract(extract_dir: str, file_urls: List[str]) -> None:
-    async def download_and_extract() -> None:
+def download_and_extract(extract_dir: str, file_urls: List[str]) -> None:
+    async def async_process() -> None:
         async with aiohttp.ClientSession() as session:
             tasks = [fetch_file(session, url, extract_dir) for url in file_urls]
             await asyncio.gather(*tasks)
 
-    asyncio.run(download_and_extract())
+    asyncio.run(async_process())
 
 
-def fetch_file_list_run_processing_by_chunk(args: argparse.Namespace) -> None:
+def split_by_chunk_and_run_download_and_extract_in_parallel(extract_dir: str, processes: int, file_urls: List[str]) -> None:
+    # предотвращаем случай, когда есть остаток от деления и создается на 1 chunk больше
+    chunk_size = len(file_urls) // processes + 1
+    chunks = [file_urls[i:i + chunk_size] for i in range(0, len(file_urls), chunk_size)]
+
+    processes = []
+    for i in range(len(chunks)):
+        process = multiprocessing.Process(target=download_and_extract, args=(extract_dir, chunks[i]))
+        processes.append(process)
+        process.start()
+
+    for process in processes:
+        process.join()
+
+
+def fetch_file_list_and_run(args: argparse.Namespace) -> None:
     # NOTE: я использую requests вместо асинхронщины конкретно в этом месте, потому что мне нужно выполнить ровно 1
     # запрос и до его выполнения программа не может быть продолжена дальше, здесь чисто синхронный код
     # TODO: убрать warning NotOpenSSLWarning: urllib3 v2.0 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
@@ -150,19 +165,7 @@ def fetch_file_list_run_processing_by_chunk(args: argparse.Namespace) -> None:
     # TODO: удалить перед показом
     # file_urls = file_urls[:2]
 
-    # предотвращаем случай, когда есть остаток от деления и создается на 1 chunk больше
-    chunk_size = len(file_urls) // args.processes + 1
-    chunks = [file_urls[i:i + chunk_size] for i in range(0, len(file_urls), chunk_size)]
-
-    processes = []
-    for i in range(len(chunks)):
-        process = multiprocessing.Process(target=run_download_and_extract, args=(args.extract_dir, chunks[i]))
-        processes.append(process)
-        process.start()
-
-    for process in processes:
-        process.join()
-
+    split_by_chunk_and_run_download_and_extract_in_parallel(args.extract_dir, args.processes, file_urls)
     run_read_extracted_and_transform(args.extract_dir, args.converted_dir, file_urls)
 
 
@@ -182,7 +185,7 @@ def main() -> None:
     os.makedirs(args.extract_dir, exist_ok=True)
     os.makedirs(args.converted_dir, exist_ok=True)
 
-    fetch_file_list_run_processing_by_chunk(args)
+    fetch_file_list_and_run(args)
 
 
 if __name__ == "__main__":
