@@ -20,7 +20,7 @@ from collections import namedtuple
 # Настройка логгера
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-formatter = logging.Formatter('%(levelname)s - %(message)s')
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
@@ -42,10 +42,11 @@ def extract_grib2_data(file_path: str) -> Optional[Grib2Data]:
     # NOTE: хорошо бы хранить в памяти всё и передавать, диск лишняя сущность, в но в этом API библиотеки нет готового
     # способа работы с памятью. Можно переписать, если будет необходимость ускорить общее время работы
     # NOTE: мне нужна только часть датасета, возможно для ускорения доставать только его (это еще нужно проверить)
-    # TODO: почему-то выдает ошибку "Ignoring index file '..._tot_prec.grib2.923a8.idx' older than GRIB file", нужно
+    # NOTE: почему-то выдает ошибку "Ignoring index file '..._tot_prec.grib2.923a8.idx' older than GRIB file", нужно
     # либо добавить backend_kwargs={"indexpath": ""}, чтобы игнорировать эту ошибку, либо удалять файлы индексов перед
     # использованием (потому что они не используются, если уже созданы в предыдущем запуске). Нужно замерять как будет
-    # быстрее и есть ли разница
+    # быстрее и есть ли разница. Для задания пропущу эту проблему, так как она имеет смысл только вне Docker (с Docker
+    # папка для скачивания создается каждый раз заново внутри образа)
     datasets = cfgrib.open_datasets(file_path)
     # NOTE: нужно проверить поля в файле на соответствие ожидаемому нам формату, для этого задания я это опущу
     if len(datasets) != 1:
@@ -216,7 +217,6 @@ def fetch_file_list_and_run(args: argparse.Namespace) -> None:
     """
     # NOTE: я использую requests вместо асинхронщины конкретно в этом месте, потому что мне нужно выполнить ровно 1
     # запрос и до его выполнения программа не может быть продолжена дальше, здесь чисто синхронный код
-    # TODO: убрать warning NotOpenSSLWarning: urllib3 v2.0 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
     response = requests.get(args.url)
     if response.status_code != 200:
         logger.error(f"Не могу получить содержимое по запросу {args.url}, код ошибки {response.status_code}")
